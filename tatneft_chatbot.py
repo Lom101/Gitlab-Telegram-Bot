@@ -1,12 +1,23 @@
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import time
 import gitlab
-from gitlab import Gitlab
-import telebot 
+import telebot
+
+async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(f'Hello {update.effective_user.first_name}')
+
+
+app = ApplicationBuilder().token("6429627243:AAHj4KiC3-r7NYAa06fNiyFeFGQSb5CHbm0").build()
+
+app.add_handler(CommandHandler("hello", hello))
+
+app.run_polling() 
 bot = telebot.TeleBot("6429627243:AAHj4KiC3-r7NYAa06fNiyFeFGQSb5CHbm0")
 
 GITLAB_URL = 'https://gitlab.infra.tatneftm.ru/trainee-projects/trainee-gitlab-telebot'
-GITLAB_TOKEN = 'JchyapGxsKx8Y9vAD79w'
-CHAT_ID = 'https://web.telegram.org/k/#-2211565784'
+GITLAB_TOKEN = 'c56cXy9bGt7BS6G4Zhxy'
+CHAT_ID = '2211565784'
 
 def get_merge_requests():
     gl = gitlab.Gitlab(GITLAB_URL, GITLAB_TOKEN)
