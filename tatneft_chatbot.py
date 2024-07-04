@@ -4,20 +4,19 @@ import time
 import gitlab
 import telebot
 
-async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f'Hello {update.effective_user.first_name}')
 
+app = ApplicationBuilder().token("<<TOKEN>>").build()
 
-app = ApplicationBuilder().token("6429627243:AAHj4KiC3-r7NYAa06fNiyFeFGQSb5CHbm0").build()
-
-app.add_handler(CommandHandler("hello", hello))
+app.add_handler(CommandHandler("start", start))
 
 app.run_polling() 
-bot = telebot.TeleBot("6429627243:AAHj4KiC3-r7NYAa06fNiyFeFGQSb5CHbm0")
+bot = telebot.TeleBot("<<TOKEN>>")
 
 GITLAB_URL = 'https://gitlab.infra.tatneftm.ru/trainee-projects/trainee-gitlab-telebot'
-GITLAB_TOKEN = 'c56cXy9bGt7BS6G4Zhxy'
-CHAT_ID = '2211565784'
+GITLAB_TOKEN = '<<TOKEN>>'
+CHAT_ID = '<<ID>>'
 
 def get_merge_requests():
     gl = gitlab.Gitlab(GITLAB_URL, GITLAB_TOKEN)
@@ -55,7 +54,8 @@ def check_merge_request_status(bot):
 
 class Bot:
     def send_message(self, message):
-        print(message) # Здесь можно добавить отправку сообщения в чат
+        print("message") # Здесь можно добавить отправку сообщения в чат
+
 
 bot = Bot()
-check_merge_requests(bot)
+#check_merge_requests(bot)
