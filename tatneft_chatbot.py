@@ -1,61 +1,56 @@
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import time
-import gitlab
-import telebot
+import requests
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f'Hello {update.effective_user.first_name}')
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.message.chat_id
+    await update.message.reply_text(f'Your chat id is: {chat_id}')
+async def gitlab_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    projects = get_gitlab_project_info()
+    if projects:
+        response_text = ""
+        for project_info in projects:
+            response_text += (
+                f"Project ID: {project_info['id']}\n"
+                f"Name: {project_info['name']}\n"
+                f"Description: {project_info['description']}\n"
+                f"URL: {project_info['web_url']}\n\n"
+            )
+    else:
+        response_text = "Не удалось получить информацию о проектах."
 
-app = ApplicationBuilder().token("<<TOKEN>>").build()
+    await update.message.reply_text(response_text)
 
-app.add_handler(CommandHandler("start", start))
+BOT_TOKEN = "BOT_TOKEN"
+GITLAB_URL = 'https://gitlab.infra.tatneftm.ru/'
+GITLAB_TOKEN = 'GITLAB_TOKEN'
+CHAT_ID = ''
 
-app.run_polling() 
-bot = telebot.TeleBot("<<TOKEN>>")
+def get_gitlab_project_info():
+    response = requests.get(f"https://gitlab.infra.tatneftm.ru/api/v4/projects?private_token={GITLAB_TOKEN}")
+    # Отладочная информация
+    print(f"HTTP Status Code: {response.status_code}")
+    print(f"Response Content: {response.text}")
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as err:
+        print(f"HTTP error occurred: {err}")
+        return None
+    try:
+        return response.json()
+    except requests.exceptions.JSONDecodeError as err:
+        print(f"JSON decode error: {err}")
+        return None
 
-GITLAB_URL = 'https://gitlab.infra.tatneftm.ru/trainee-projects/trainee-gitlab-telebot'
-GITLAB_TOKEN = '<<TOKEN>>'
-CHAT_ID = '<<ID>>'
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("echo", echo))
+    app.add_handler(CommandHandler("g", gitlab_info))
+    app.run_polling()
 
-def get_merge_requests():
-    gl = gitlab.Gitlab(GITLAB_URL, GITLAB_TOKEN)
-    project = gl.projects.get(CHAT_ID)
-
-    open_merge_requests = project.mergerequests.list(state='opened')
-
-    return open_merge_requests
-
-def check_merge_requests(bot):
-    while True:
-        merge_requests = get_merge_requests()
-        
-        for mr in merge_requests:
-            bot.send_message(f'New merge request: {mr.title}')
-
-        time.sleep(60) # Проверяем каждую минуту
-
-def check_merge_request_status(bot):
-    gl = gitlab.Gitlab(GITLAB_URL, GITLAB_TOKEN)
-    project = gl.projects.get(CHAT_ID)
-    
-    merge_requests = get_merge_requests()
-    merge_request_status = {mr.id: mr.state for mr in merge_requests}
-
-    while True:
-        for mr in merge_requests:
-            new_mr_status = project.mergerequests.get(mr.id).state
-            if new_mr_status != merge_request_status[mr.id]:
-                bot.send_message(f'Merge request status changed: {mr.title}')
-
-            merge_request_status[mr.id] = new_mr_status
-
-        time.sleep(60) # Проверяем каждую минуту
-
-class Bot:
-    def send_message(self, message):
-        print("message") # Здесь можно добавить отправку сообщения в чат
-
-
-bot = Bot()
-#check_merge_requests(bot)
+if __name__ == '__main__':
+    main()
