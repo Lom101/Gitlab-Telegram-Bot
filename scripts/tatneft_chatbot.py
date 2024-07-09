@@ -173,7 +173,17 @@ async def add_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(f"Настройка '{key}' добавлена со значением '{value}'")
 
 async def delete_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    print("Deleting..")
+    chat_id = str(update.message.chat_id)
+    if len(context.args) == 1:
+        project_id = context.args[0]
+        if project_id in config_manager.get_values(chat_id):
+            config_manager.remove_value(chat_id, project_id)
+            response_message = f"Проект с ID {project_id} был удален для чата с ID {chat_id}."
+        else:
+            response_message = f"Проект с ID {project_id} не был найден для чата с ID {chat_id}."
+    else:
+        response_message = "Укажите ID проекта, который нужно удалить. Используй: /delete_project <PROJECT_ID>"
+    await update.message.reply_text(response_message)
 
 async def project_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.message.chat_id)
@@ -199,6 +209,7 @@ def main():
     app.add_handler(CommandHandler("merge", gitlab_merges_info))
     app.add_handler(CommandHandler("add_project", add_project))
     app.add_handler(CommandHandler("project_list", project_list))
+    app.add_handler(CommandHandler("delete_project", delete_project))
     app.add_handler(CommandHandler("help", help))
 
     print(config_manager.get_all_entries())
