@@ -1,46 +1,58 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackContext
-import asyncio
 import os
+import asyncio
+import logging
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext, ContextTypes
 from dotenv import load_dotenv
-from scripts.ConfigManager import ConfigManager
-import GitlabService
+from GitlabService import GitlabService
+from ConfigManager import ConfigManager
 
-# Файл конфигурации config.json со значениями chat_id:project_id
-config_manager = ConfigManager("../config.json")
+# Настройка логгирования
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# выгружаем переменные окружения(токены) из .env
+# Загрузка переменных окружения из .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITLAB_URL = os.getenv("GITLAB_URL")
 GITLAB_TOKEN = os.getenv("GITLAB_TOKEN")
+TIME = 3600 # периодичность запросов к API GITLAB(60 минут)
 
-# Словарь для хранения tasks по chat_id
+# Проверка загрузки переменных окружения
+if not BOT_TOKEN or not GITLAB_URL or not GITLAB_TOKEN:
+    logging.error("Failed to load environment variables. check the .env file.")
+    exit(1)
+
+# Словарь для хранения tasks (запущенных процессов мониторинга MR в чатах (по chat_id))
 tasks = {}
+
+# Файл конфигурации config.json со значениями chat_id:project_id
+config_manager = ConfigManager("../config.json")
+# Создаем объект GitlabService для работы с API GitLab
+gitlab_service = GitlabService(GITLAB_URL, GITLAB_TOKEN)
 
 
 # Функция, которая выводит информацию об открытых запросах на слияние(будет выполняться в бесконечном цикле)
 async def opened_mr_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     while True:
-        print(f"Checking MR for chat_id={update.message.chat_id}...")
-        projects = GitlabService.get_gitlab_projects_info(GITLAB_TOKEN)
-        response_text = ""
+        logging.info(f"Checking MR for chat_id={update.message.chat_id}...")
+        projects = gitlab_service.get_gitlab_projects_info()
+        response_text = "Список открытых merge requests:\n"
         if projects:
             for project_info in projects:
-                url = project_info['_links']['merge_requests']
-                # если такой chat_id есть в config.json(в базе данных)
+                merge_url = project_info['_links']['merge_requests']
+                # если chat_id есть в config.json(то есть хоть один проект добавлен)
                 if config_manager.get_values(str(update.message.chat_id)):
-                    # если такой project_id есть в config.json и текущий chat_id равен chat_id в config.json
+                    # если project_id есть в config.json для текущего чата
                     if str(project_info['id']) in config_manager.get_values(str(update.message.chat_id)):
                         # выводим информацию о MR проекта
-                        merge_requests = GitlabService.get_gitlab_merges_info(url, GITLAB_TOKEN)
+                        merge_requests = gitlab_service.get_gitlab_merges_info(merge_url)
                         for mr in merge_requests:
                             mr_id = mr.get('id')
                             title = mr.get('title')
                             description = mr.get('description', 'No description')
                             state = mr.get('state')
                             created_at = mr.get('created_at')
-                            updated_at = mr.get('updated_at')
+                            # updated_at = mr.get('updated_at')
                             web_url = mr.get('web_url')
 
                             # печатаем только открытые MR
@@ -55,45 +67,49 @@ async def opened_mr_check(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                                 f"URL: {web_url}\n\n"
                             )
                 else:
-                    await update.message.reply_text(f"Проекты в вашем чате не найдены. Добавьте их через /add_project")
-                    break
+                    await update.message.reply_text(f"Проекты в вашем чате не найдены. Добавьте их через /add_project.")
+                    return
         else:
-            response_text = "Не удалось получить информацию о проектах либо список проектов в вашем чате пуст.."
-        if response_text == "":
-            await update.message.reply_text("Открытых запросов на слияние нет")
+            response_text = "Не удалось получить информацию о проектах из GitLab. Возможно список проектов пуст."
+        if response_text == "Список открытых merge requests:\n":
+            await update.message.reply_text("Открытых запросов на слияние нет.")
         else:
             await update.message.reply_text(response_text)
-        await asyncio.sleep(10)
+        await asyncio.sleep(TIME)
+
 
 # Функция запуска, бот начинает мониторить MR
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
     if chat_id in tasks and not tasks[chat_id].done():
-        await update.message.reply_text(f'Процесс мониторинга MR уже был запущен..')
+        await update.message.reply_text(f'Мониторинг уже запущен.')
         return
+    await update.message.reply_text(f'Мониторинг открытых merge requests запущен.')
     task = asyncio.create_task(opened_mr_check(update, context))
     tasks[chat_id] = task
-    await update.message.reply_text(f'Запуск мониторинга открытых MR начат..')
+
 
 # Функция остановки, бот прекращает мониторить MR
 async def stop(update: Update, context: CallbackContext) -> None:
     chat_id = update.message.chat_id
     if chat_id in tasks and not tasks[chat_id].done():
         tasks[chat_id].cancel()
-        await update.message.reply_text(f'Остановка мониторинга открытых MR..')
+        await update.message.reply_text(f'Мониторинг открытых merge requests остановлен.')
     else:
-        await update.message.reply_text(f'Мониторинг MR еще не был запущен..')
+        await update.message.reply_text(f'Мониторинг еще не был запущен.')
+
 
 # Функция которая выводит chat_id текущего чата
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
-    await update.message.reply_text(f'Ваш chat_id: {chat_id}')\
+    await update.message.reply_text(f'Ваш chat_id: {chat_id}')
+
 
 # Функция выводит информацию обо всех командах
 async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_command = (
-        "/start - Запуск мониторинга открытых MR\n"
-        "/stop -  Остановить мониторинг открытых MR\n"
+        "/start - Запустить мониторинг открытых MR\n"
+        "/stop - Остановить мониторинг открытых MR\n"
         "/echo - Показать ID чата\n"
         "/add_project - Добавить проект в чат\n"
         "/delete_project - Удалить проект из чата\n"
@@ -102,19 +118,26 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await update.message.reply_text(help_command)
 
+
 # Функция для добавления проекта в чат
 async def add_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Получение аргументов команды
     args = context.args
-    if len(args) != 1:
-        await update.message.reply_text("Используйте: /add_project <PROJECT_ID>")
+    if len(args) != 1 or not args[0].isdigit():
+        await update.message.reply_text("Используйте: /add_project <PROJECT_ID>. PROJECT_ID должен быть целым числом.")
         return
+
     key = str(update.message.chat_id)
     value = args[0]
 
-    # Добавление нового поля в config.json
-    config_manager.add_value(key, value)
-    await update.message.reply_text(f"Проект с id='{value}' добавлен")
+    try:
+        # Попытка добавить значение в конфигурацию
+        config_manager.add_value(key, value)
+        await update.message.reply_text(f"Проект с id '{value}' успешно добавлен в чат.")
+    except Exception as e:
+        logging.error(f"Ошибка при добавлении проекта в чат: {e}")
+        await update.message.reply_text(f"Произошла ошибка при добавлении проекта в чат. Пожалуйста, попробуйте снова.")
+
+
 # Функция для удаления проекта из чата
 async def delete_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.message.chat_id)
@@ -122,25 +145,27 @@ async def delete_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         project_id = context.args[0]
         if project_id in config_manager.get_values(chat_id):
             config_manager.remove_value(chat_id, project_id)
-            response_message = f"Проект с ID {project_id} был удален"
+            response_message = f"Проект с ID {project_id} был удален из чата."
         else:
-            response_message = f"Проект с ID {project_id} не был найден"
+            response_message = f"Проект с ID {project_id} не найден в чате."
     else:
-        response_message = "Укажите ID проекта, который нужно удалить. Используй: /delete_project <PROJECT_ID>"
+        response_message = "Укажите ID проекта, который нужно удалить. Используйте: /delete_project <PROJECT_ID>"
     await update.message.reply_text(response_message)
+
+
 # Функция для получения списка проектов чата
 async def get_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.message.chat_id)
-    project_id = config_manager.get_values(chat_id)
+    project_ids = config_manager.get_values(chat_id)
 
-    if project_id:
+    if project_ids:
         # Создаем сообщение с проектами этого чата
-        keys_message = f"Список проектов добавленных в чат: \n"
-        keys_message += "\n".join(f"Project_id: {value}" for value in config_manager.get_values(chat_id))
+        keys_message = "Список проектов добавленных в чат: \n"
+        keys_message += "\n".join(f"Project_id: {value}" for value in project_ids)
     else:
         keys_message = f"Проекты не были найдены для этого чата. Используйте: /add_project <PROJECT_ID>"
-    # Отправляем сообщение пользователю
     await update.message.reply_text(keys_message)
+
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -152,7 +177,7 @@ def main():
     app.add_handler(CommandHandler("delete_project", delete_project))
     app.add_handler(CommandHandler("help", help))
 
-    print("Bot is running...")
+    logging.info("Bot is running...")
     app.run_polling()
 
 
