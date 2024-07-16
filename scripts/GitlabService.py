@@ -11,7 +11,7 @@ class GitlabService:
         self.gitlab_token = gitlab_token
 
     def get_gitlab_projects_info(self):
-        url = f"{self.base_url}/api/v4/projects?private_token={self.gitlab_token}"
+        url = f"{self.base_url}/api/v4/projects?access_token={self.gitlab_token}"
         logging.info("Fetching GitLab projects information...")
         try:
             response = requests.get(url)
@@ -28,7 +28,7 @@ class GitlabService:
     def get_gitlab_merges_info(self, url: str):
         logging.info("Fetching GitLab merge requests information...")
         try:
-            response = requests.get(f"{url}?private_token={self.gitlab_token}")
+            response = requests.get(f"{url}?access_token={self.gitlab_token}")
             response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as err:

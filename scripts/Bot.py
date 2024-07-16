@@ -1,38 +1,69 @@
 import os
 import asyncio
 import logging
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext, ContextTypes
 from dotenv import load_dotenv
 from GitlabService import GitlabService
 from ConfigManager import ConfigManager
 
-# Настройка логгирования
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
 # Загрузка переменных окружения из .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITLAB_URL = os.getenv("GITLAB_URL")
-GITLAB_TOKEN = os.getenv("GITLAB_TOKEN")
-TIME = 3600 # периодичность запросов к API GITLAB(60 минут)
+GITLAB_CLIENT_ID = os.getenv("GITLAB_CLIENT_ID")
+GITLAB_CLIENT_SECRET = os.getenv("GITLAB_CLIENT_SECRET")
+REDIRECT_URI = os.getenv("REDIRECT_URI")
+SCOPE = 'api'
+TIME = 3600  # периодичность запросов к API GITLAB(60 минут)
 
 # Проверка загрузки переменных окружения
-if not BOT_TOKEN or not GITLAB_URL or not GITLAB_TOKEN:
-    logging.error("Failed to load environment variables. check the .env file.")
+if not BOT_TOKEN or not GITLAB_URL or not GITLAB_CLIENT_ID or not GITLAB_CLIENT_SECRET or not REDIRECT_URI:
+    logging.error("Failed to load environment variables. Check the .env file.")
     exit(1)
+
+# Настройка логгирования
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # Словарь для хранения tasks (запущенных процессов мониторинга MR в чатах (по chat_id))
 tasks = {}
 
 # Файл конфигурации config.json со значениями chat_id:project_id
 config_manager = ConfigManager("../config.json")
-# Создаем объект GitlabService для работы с API GitLab
-gitlab_service = GitlabService(GITLAB_URL, GITLAB_TOKEN)
+# Файл конфигурации tokens.json хранит авторизованных пользователей со значениями chat_id:token
+authorized_users = ConfigManager("../tokens.json")
+
+
+def is_authorized(chat_id):
+    authorized_users.load_config()
+    return authorized_users.get_values(chat_id)
+async def unauthorized_message(update: Update):
+    STATE = update.message.chat_id # зашиваем chat_id
+    auth_url = f"{GITLAB_URL}/oauth/authorize?client_id={GITLAB_CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&state={STATE}&scope={SCOPE}"
+    await update.message.reply_text(f"Авторизуйтесь через GitLab: {auth_url}")
+
+# region Команды бота
+
+# функция запуска бота
+async def start(update: Update, context: CallbackContext) -> None:
+    chat_id = update.message.chat_id
+    if not is_authorized(str(chat_id)):
+        await unauthorized_message(update)
+        return
+    await update.message.reply_text("Добро пожаловать! Вы авторизованы.")
 
 
 # Функция, которая выводит информацию об открытых запросах на слияние(будет выполняться в бесконечном цикле)
 async def opened_mr_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.message.chat_id
+    if not is_authorized(str(chat_id)):
+        await unauthorized_message(update)
+        return
+    # создаем сервис для работы с текущим пользователем
+    gitlab_service = GitlabService(GITLAB_URL, authorized_users.get_values(str(chat_id))[-1])
+    # последний элемент пусть пока что будет самым свежим токеном допустим, если человек авторизовался несколько раз
+
     while True:
         logging.info(f"Checking MR for chat_id={update.message.chat_id}...")
         projects = gitlab_service.get_gitlab_projects_info()
@@ -79,7 +110,12 @@ async def opened_mr_check(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # Функция запуска, бот начинает мониторить MR
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start_checking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.message.chat_id
+    if not is_authorized(str(chat_id)):
+        await update.message.reply_text(f'Все ваши токены {is_authorized(chat_id)}')
+        await unauthorized_message(update)
+        return
     chat_id = update.message.chat_id
     if chat_id in tasks and not tasks[chat_id].done():
         await update.message.reply_text(f'Мониторинг уже запущен.')
@@ -90,7 +126,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # Функция остановки, бот прекращает мониторить MR
-async def stop(update: Update, context: CallbackContext) -> None:
+async def stop_checking(update: Update, context: CallbackContext) -> None:
+    chat_id = update.message.chat_id
+    if not is_authorized(str(chat_id)):
+        await unauthorized_message(update)
+        return
     chat_id = update.message.chat_id
     if chat_id in tasks and not tasks[chat_id].done():
         tasks[chat_id].cancel()
@@ -108,8 +148,9 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # Функция выводит информацию обо всех командах
 async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_command = (
-        "/start - Запустить мониторинг открытых MR\n"
-        "/stop - Остановить мониторинг открытых MR\n"
+        "/start - Запустить бота\n"
+        "/start_checking - Запустить мониторинг открытых MR\n"
+        "/stop_checking - Остановить мониторинг открытых MR\n"
         "/echo - Показать ID чата\n"
         "/add_project - Добавить проект в чат\n"
         "/delete_project - Удалить проект из чата\n"
@@ -121,6 +162,10 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # Функция для добавления проекта в чат
 async def add_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.message.chat_id
+    if not is_authorized(str(chat_id)):
+        await unauthorized_message(update)
+        return
     args = context.args
     if len(args) != 1 or not args[0].isdigit():
         await update.message.reply_text("Используйте: /add_project <PROJECT_ID>. PROJECT_ID должен быть целым числом.")
@@ -140,6 +185,10 @@ async def add_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # Функция для удаления проекта из чата
 async def delete_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.message.chat_id
+    if not is_authorized(str(chat_id)):
+        await unauthorized_message(update)
+        return
     chat_id = str(update.message.chat_id)
     if len(context.args) == 1:
         project_id = context.args[0]
@@ -155,6 +204,10 @@ async def delete_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # Функция для получения списка проектов чата
 async def get_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.message.chat_id
+    if not is_authorized(str(chat_id)):
+        await unauthorized_message(update)
+        return
     chat_id = str(update.message.chat_id)
     project_ids = config_manager.get_values(chat_id)
 
@@ -167,10 +220,14 @@ async def get_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(keys_message)
 
 
-def main():
+# endregion Команды бота
+
+
+def run_bot():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("start_checking", start_checking))
+    app.add_handler(CommandHandler("stop_checking", stop_checking))
     app.add_handler(CommandHandler("echo", echo))
     app.add_handler(CommandHandler("add_project", add_project))
     app.add_handler(CommandHandler("get_projects", get_projects))
@@ -182,4 +239,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    run_bot()
