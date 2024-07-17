@@ -2,8 +2,10 @@ import os
 import asyncio
 import logging
 
+import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext, ContextTypes
+from functools import wraps
 from dotenv import load_dotenv
 from GitlabService import GitlabService
 from ConfigManager import ConfigManager
@@ -15,7 +17,7 @@ GITLAB_URL = os.getenv("GITLAB_URL")
 GITLAB_CLIENT_ID = os.getenv("GITLAB_CLIENT_ID")
 GITLAB_CLIENT_SECRET = os.getenv("GITLAB_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
-SCOPE = 'api'
+SCOPE = 'read_api'
 TIME = 3600  # периодичность запросов к API GITLAB(60 минут)
 
 # Проверка загрузки переменных окружения
@@ -35,6 +37,37 @@ config_manager = ConfigManager("../config.json")
 authorized_users = ConfigManager("../tokens.json")
 
 
+def check_gitlab_token_validity(user_id):
+    gitlab_user_token = authorized_users.get_values(str(user_id))[0]
+    url = f"{GITLAB_URL}/api/v4/user?access_token={gitlab_user_token}"
+    response = requests.get(url)
+    response.raise_for_status()
+    if response.status_code == 200:
+        return True
+    else:
+        return False
+# Декоратор для проверки доступа пользователя
+def user_access_required(func):
+    @wraps(func)
+    async def wrapper(update: Update, context: CallbackContext, *args, **kwargs):
+        user_id = update.effective_user.id
+        # логика проверки доступа/авторизации
+        if is_authorized(str(user_id)): # ПРОВЕРЯЕМ ЕСТЬ ЛИ ВООБЩЕ ТОКЕН В БД
+
+            # тут нужно выполнить запрос к api gitlab и если code 200 то token нормальный, иначе обновить токен
+            # иначе вывести сообщение что нужно снова авторизоваться
+
+            # узнаем валиден ли последний токен
+            if check_gitlab_token_validity:
+                await update.message.reply_text("Добро пожаловать! Вы авторизованы.")
+                return await func(update, context, *args, **kwargs)
+            else:
+                await unauthorized_message(update)
+                return
+        else:
+            await unauthorized_message(update)
+            return
+    return wrapper
 def is_authorized(chat_id):
     authorized_users.load_config()
     return authorized_users.get_values(chat_id)
@@ -43,15 +76,21 @@ async def unauthorized_message(update: Update):
     auth_url = f"{GITLAB_URL}/oauth/authorize?client_id={GITLAB_CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&state={STATE}&scope={SCOPE}"
     await update.message.reply_text(f"Авторизуйтесь через GitLab: {auth_url}")
 
-# region Команды бота
 
-# функция запуска бота
-async def start(update: Update, context: CallbackContext) -> None:
+
+# функция запуска бота /start
+@user_access_required
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
-    if not is_authorized(str(chat_id)):
-        await unauthorized_message(update)
-        return
-    await update.message.reply_text("Добро пожаловать! Вы авторизованы.")
+    await update.message.reply_text("Опа.. start выполнился")
+
+
+    # if not is_authorized(str(chat_id)):
+    #     await unauthorized_message(update)
+    #     return
+    # await update.message.reply_text("Добро пожаловать! Вы авторизованы.")
+
+# region Команды бота
 
 
 # Функция, которая выводит информацию об открытых запросах на слияние(будет выполняться в бесконечном цикле)
@@ -113,7 +152,6 @@ async def opened_mr_check(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def start_checking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
     if not is_authorized(str(chat_id)):
-        await update.message.reply_text(f'Все ваши токены {is_authorized(chat_id)}')
         await unauthorized_message(update)
         return
     chat_id = update.message.chat_id
@@ -222,9 +260,9 @@ async def get_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 # endregion Команды бота
 
-
 def run_bot():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("start_checking", start_checking))
     app.add_handler(CommandHandler("stop_checking", stop_checking))
@@ -240,3 +278,5 @@ def run_bot():
 
 if __name__ == '__main__':
     run_bot()
+
+
