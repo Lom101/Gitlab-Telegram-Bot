@@ -2,6 +2,8 @@ from flask import Flask, request, redirect
 import requests
 import os
 from dotenv import load_dotenv
+from Database import add_token, get_all_tokens, update_token, delete_token
+
 
 from ConfigManager import ConfigManager
 
@@ -37,12 +39,26 @@ def gitlab_callback():
         'redirect_uri': REDIRECT_URI,
     }
     token_response = requests.post(token_url, data=token_data).json()
+    # все данные из ответа
     access_token = token_response.get('access_token')
+    token_type = token_response.get('token_type')
+    expires_in = token_response.get('expires_in')
+    created_at = token_response.get('created_at')
+    refresh_token = token_response.get('refresh_token')
 
     if access_token:
         print("Авторизация прошла успешно!")
-        # добавляем в базу данных chat_id и токен пользователя
-        authorized_users.add_value(str(chat_id), str(access_token))
+        # добавляем в базу данных информацию о chat_id и информацию о токене котроую вернул сервер gitlab
+        # Добавление нового токена
+        add_token(
+            access_token=access_token,
+            token_type=token_type,
+            expires_in=expires_in,
+            refresh_token=refresh_token,
+            created_at=created_at,
+            chat_id=chat_id
+        )
+        #authorized_users.add_value(str(chat_id), str(access_token))
         return "Авторизация прошла успешно! Вы можете вернуться в Telegram."
     else:
         print("Ошибка авторизации. Попробуйте еще раз.")

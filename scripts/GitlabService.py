@@ -17,6 +17,7 @@ class GitlabService:
             url = f"{self.base_url}/api/v4/projects?access_token={self.gitlab_token}"
             response = requests.get(url)
             response.raise_for_status()
+            return response.json()
         except requests.exceptions.RequestException as e:
             logging.error(f"Request failed: {e}")
         return None
@@ -27,6 +28,7 @@ class GitlabService:
         try:
             response = requests.get(f"{url}?access_token={self.gitlab_token}")
             response.raise_for_status()
+            return response.json()
         except requests.exceptions.RequestException as e:
             logging.error(f"Request failed: {e}")
 
