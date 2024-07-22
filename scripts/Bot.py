@@ -12,7 +12,6 @@ from GitlabService import GitlabService
 from ConfigManager import ConfigManager
 from Database import update_token, delete_token, get_token_by_chat_id, get_token_id_by_chat_id
 
-
 # Загрузка переменных окружения из .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -39,57 +38,60 @@ config_manager = ConfigManager("../config.json")
 
 # region Функции
 
+
 def check_gitlab_token_validity(user_id):
     gitlab_user_token = get_token_by_chat_id(user_id)
     url = f"{GITLAB_URL}/api/v4/user?access_token={gitlab_user_token.access_token}"
     response = requests.get(url)
     return response.status_code == 200
 
+def is_authorized(chat_id):
+    return get_token_by_chat_id(chat_id)
+
+async def refresh_access_token(chat_id):
+    refresh_token = get_token_by_chat_id(chat_id).refresh_token
+    token_url = f'{GITLAB_URL}/oauth/token'
+    token_data = {
+        'client_id': GITLAB_CLIENT_ID,
+        'client_secret': GITLAB_CLIENT_SECRET,
+        'refresh_token': refresh_token,
+        'grant_type': 'refresh_token',
+        'redirect_uri': REDIRECT_URI,
+    }
+    fresh_token = requests.post(token_url, data=token_data)
+    fresh_token.raise_for_status()
+    fresh_token = fresh_token.json()
+    update_token(
+        token_id=get_token_id_by_chat_id(chat_id),
+        access_token=fresh_token.get('access_token'),
+        token_type=fresh_token.get('token_type'),
+        expires_in=fresh_token.get('expires_in'),
+        refresh_token=fresh_token.get('refresh_token'),
+        created_at=fresh_token.get('created_at')
+    )
+
 # Декоратор для проверки доступа пользователя
 def user_access_required(func):
     @wraps(func)
     async def wrapper(update: Update, context: CallbackContext, *args, **kwargs):
-        chat_id = update.effective_user.id
-        if is_authorized(str(chat_id)):
+        chat_id = str(update.effective_user.id)
+        if is_authorized(chat_id):
             if check_gitlab_token_validity(chat_id):
                 #await update.message.reply_text("Добро пожаловать! Вы авторизованы.")
                 return await func(update, context, *args, **kwargs)
             else:
-                refresh_token = get_token_by_chat_id(str(chat_id)).refresh_token
-                token_url = f'{GITLAB_URL}/oauth/token'
-                token_data = {
-                    'client_id': GITLAB_CLIENT_ID,
-                    'client_secret': GITLAB_CLIENT_SECRET,
-                    'refresh_token': refresh_token,
-                    'grant_type': 'refresh_token',
-                    'redirect_uri': REDIRECT_URI,
-                }
                 try:
-                    fresh_token = requests.post(token_url, data=token_data)
-                    fresh_token.raise_for_status()
-                    fresh_token = fresh_token.json()
-                    update_token(
-                        token_id=get_token_id_by_chat_id(str(chat_id)),
-                        access_token=fresh_token.get('access_token'),
-                        token_type=fresh_token.get('token_type'),
-                        expires_in=fresh_token.get('expires_in'),
-                        refresh_token=fresh_token.get('refresh_token'),
-                        created_at=fresh_token.get('created_at')
-                    )
+                    await refresh_access_token(chat_id)
                     await update.message.reply_text("Добро пожаловать! Вы авторизованы.")
                     return await func(update, context, *args, **kwargs)
                 except Exception as err:
                     logging.info(f"Токен был удален: {err}")
-                    delete_token(get_token_id_by_chat_id(str(chat_id)))
+                    delete_token(get_token_id_by_chat_id(chat_id))
                     await unauthorized_message(update)
-                    return
         else:
             await unauthorized_message(update)
-            return
-    return wrapper
 
-def is_authorized(chat_id):
-    return get_token_by_chat_id(chat_id)
+    return wrapper
 
 async def unauthorized_message(update: Update):
     STATE = update.message.chat_id # зашиваем chat_id
@@ -148,7 +150,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Привет! Я бот, который отслеживает открытый MR на вашем сервере GitLab. \n/help "
                                     "- посмотреть список команд")
 
-
 # Функция запуска, бот начинает мониторить MR
 @user_access_required
 async def start_checking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -190,7 +191,8 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/add_project - Добавить проект в чат\n"
         "/delete_project - Удалить проект из чата\n"
         "/get_projects - Вывести список проектов чата\n"
-        "/help - Показать все команды бота"
+        "/help - Показать все команды бота\n"
+        "/exit - Выйти из учетной записи"
     )
     await update.message.reply_text(help_command)
 
@@ -245,6 +247,26 @@ async def get_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         keys_message = f"Проекты не были найдены для этого чата. Используйте: /add_project <PROJECT_ID>"
     await update.message.reply_text(keys_message)
 
+# Функция выхода из учетной записи /exit
+@user_access_required
+async def exit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.message.chat_id
+    access_token = get_token_by_chat_id(str(chat_id)).access_token
+    token_url = f'{GITLAB_URL}/oauth/revoke'
+    token_data = {
+        'client_id': GITLAB_CLIENT_ID,
+        'client_secret': GITLAB_CLIENT_SECRET,
+        'token': access_token,
+    }
+    try:
+        delete_token = requests.post(token_url, data=token_data)
+        delete_token.raise_for_status()
+        await update.message.reply_text("Вы успешно вышли из учетной записи.")
+        # тут еще можно добавить удаление из базы данных, но токен в любом случае удалится, если он стал невалидным
+    except Exception as err:
+        logging.info(f"Произошла ошибка при выходе из учетной записи: {err}")
+        await update.message.reply_text("Произошла ошибка при выходе из учетной записи.")
+
 
 # endregion Команды бота
 
@@ -259,6 +281,8 @@ def run_bot():
     app.add_handler(CommandHandler("get_projects", get_projects))
     app.add_handler(CommandHandler("delete_project", delete_project))
     app.add_handler(CommandHandler("help", help))
+    app.add_handler(CommandHandler("exit", exit))
+
 
     logging.info("Bot is running...")
     app.run_polling()
@@ -266,3 +290,5 @@ def run_bot():
 
 if __name__ == '__main__':
     run_bot()
+
+
