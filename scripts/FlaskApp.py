@@ -1,8 +1,8 @@
-from flask import Flask, request, redirect
+from flask import Flask, request
 import requests
 import os
 from dotenv import load_dotenv
-from Database import add_token, get_all_tokens, update_token, delete_token
+from Database import add_token
 
 
 from ConfigManager import ConfigManager
@@ -25,7 +25,7 @@ def test():
 @app.route('/gitlab/callback')
 def gitlab_callback():
     code = request.args.get('code')
-    chat_id = request.args.get('state') # при отправке request в state мы зашиваем chat_id
+    chat_id = request.args.get('state')  # при отправке request в state мы зашиваем chat_id
 
     print(code)
     print(chat_id)
@@ -48,7 +48,7 @@ def gitlab_callback():
 
     if access_token:
         print("Авторизация прошла успешно!")
-        # добавляем в базу данных информацию о chat_id и информацию о токене котроую вернул сервер gitlab
+        # добавляем в базу данных информацию о chat_id и информацию о токене которую вернул сервер gitlab
         # Добавление нового токена
         add_token(
             access_token=access_token,

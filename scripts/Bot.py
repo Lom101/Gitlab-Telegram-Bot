@@ -1,15 +1,16 @@
 import os
 import asyncio
 import logging
+from functools import wraps
 
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext, ContextTypes
-from functools import wraps
 from dotenv import load_dotenv
+
 from GitlabService import GitlabService
 from ConfigManager import ConfigManager
-from Database import add_token, get_all_tokens, update_token, delete_token, get_token_by_chat_id, get_token_id_by_chat_id
+from Database import update_token, delete_token, get_token_by_chat_id, get_token_id_by_chat_id
 
 
 # Загрузка переменных окружения из .env
@@ -36,38 +37,25 @@ tasks = {}
 # Файл конфигурации config.json со значениями chat_id:project_id
 config_manager = ConfigManager("../config.json")
 
+# region Функции
+
 def check_gitlab_token_validity(user_id):
     gitlab_user_token = get_token_by_chat_id(user_id)
-    #try:
     url = f"{GITLAB_URL}/api/v4/user?access_token={gitlab_user_token.access_token}"
     response = requests.get(url)
-    #response.raise_for_status()
-    if response.status_code == 200:
-        return True
-    else:
-        return False
-    #except requests.exceptions.HTTPError as err:
-       #print(f"Ошибка запроса: {err}")
+    return response.status_code == 200
 
 # Декоратор для проверки доступа пользователя
 def user_access_required(func):
     @wraps(func)
     async def wrapper(update: Update, context: CallbackContext, *args, **kwargs):
         chat_id = update.effective_user.id
-        # логика проверки доступа/авторизации
-        if is_authorized(str(chat_id)): # ПРОВЕРЯЕМ ЕСТЬ ЛИ ВООБЩЕ ТОКЕН В БД
-
-            # нужно выполнить запрос к api gitlab и если code 200 то token нормальный, иначе обновить токен
-            # иначе вывести сообщение что нужно снова авторизоваться
-
-            # узнаем валиден ли последний токен
+        if is_authorized(str(chat_id)):
             if check_gitlab_token_validity(chat_id):
-                await update.message.reply_text("Добро пожаловать! Вы авторизованы.")
+                #await update.message.reply_text("Добро пожаловать! Вы авторизованы.")
                 return await func(update, context, *args, **kwargs)
             else:
-                refresh_token = get_token_by_chat_id(chat_id).refresh_token
-
-                # пробуем освежить токен
+                refresh_token = get_token_by_chat_id(str(chat_id)).refresh_token
                 token_url = f'{GITLAB_URL}/oauth/token'
                 token_data = {
                     'client_id': GITLAB_CLIENT_ID,
@@ -76,16 +64,12 @@ def user_access_required(func):
                     'grant_type': 'refresh_token',
                     'redirect_uri': REDIRECT_URI,
                 }
-                #fresh_token = requests.post(token_url, data=token_data).json()
-                global fresh_token
-                # нужно доработать код
                 try:
                     fresh_token = requests.post(token_url, data=token_data)
-                    fresh_token.raise_for_status()  # Проверка на ошибки
+                    fresh_token.raise_for_status()
                     fresh_token = fresh_token.json()
-                    print("Запрос успешно выполнен.")
                     update_token(
-                        token_id=get_token_id_by_chat_id(chat_id),
+                        token_id=get_token_id_by_chat_id(str(chat_id)),
                         access_token=fresh_token.get('access_token'),
                         token_type=fresh_token.get('token_type'),
                         expires_in=fresh_token.get('expires_in'),
@@ -95,113 +79,79 @@ def user_access_required(func):
                     await update.message.reply_text("Добро пожаловать! Вы авторизованы.")
                     return await func(update, context, *args, **kwargs)
                 except Exception as err:
-                    logging.info(f"Токен был удален")
-                    delete_token(get_token_id_by_chat_id(chat_id))
+                    logging.info(f"Токен был удален: {err}")
+                    delete_token(get_token_id_by_chat_id(str(chat_id)))
                     await unauthorized_message(update)
                     return
-
-                logging.info(f"Данные которые отправляются для refresh: {token_data}")
-                logging.info(f"Обновленный токен: {fresh_token}")
-                # if(fresh_token): # токен освежился, обновляем данные в бд, user авторизован
-                #     update_token(
-                #         token_id=get_token_id_by_chat_id(chat_id),
-                #         access_token=fresh_token.get('access_token'),
-                #         token_type=fresh_token.get('token_type'),
-                #         expires_in=fresh_token.get('expires_in'),
-                #         refresh_token=fresh_token.get('refresh_token'),
-                #         created_at=fresh_token.get('created_at')
-                #     )
-                #     await update.message.reply_text("Добро пожаловать! Вы авторизованы.")
-                #     return await func(update, context, *args, **kwargs)
-                # else: # иначе удаляем и выводим сообщение
-                #     delete_token(fresh_token)
-                #     await unauthorized_message(update)
-                #     return
-
         else:
             await unauthorized_message(update)
             return
     return wrapper
+
 def is_authorized(chat_id):
     return get_token_by_chat_id(chat_id)
+
 async def unauthorized_message(update: Update):
     STATE = update.message.chat_id # зашиваем chat_id
-    auth_url = f"{GITLAB_URL}/oauth/authorize?client_id={GITLAB_CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&state={STATE}&scope={SCOPE}"
+    auth_url = (f"{GITLAB_URL}/oauth/authorize?client_id={GITLAB_CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type"
+                f"=code&state={STATE}&scope={SCOPE}")
     await update.message.reply_text(f"Авторизуйтесь через GitLab: {auth_url}")
 
-
-# функция запуска бота /start
-@user_access_required
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.message.chat_id
-    await update.message.reply_text("Привет! Я бот, который отслеживает открытый MR на вашем сервере GitLab. \n/help - посмотреть список команд")
-
-# region Команды бота
-
-
 # Функция, которая выводит информацию об открытых запросах на слияние(будет выполняться в бесконечном цикле)
-@user_access_required
 async def opened_mr_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
-    if not is_authorized(str(chat_id)):
-        await unauthorized_message(update)
-        return
-    # создаем сервис для работы с текущим пользователем
+    # создаем сервис для работы с текущим пользователем/чатом
     gitlab_service = GitlabService(GITLAB_URL, get_token_by_chat_id(str(chat_id)).access_token)
-    # последний элемент пусть пока что будет самым свежим токеном допустим, если человек авторизовался несколько раз
 
     while True:
         logging.info(f"Checking MR for chat_id={update.message.chat_id}...")
-        projects = gitlab_service.get_gitlab_projects_info()
+        merges = gitlab_service.get_gitlab_merges_info()
         response_text = "Список открытых merge requests:\n"
-        if projects:
-            for project_info in projects:
-                merge_url = project_info['_links']['merge_requests']
-                # если chat_id есть в config.json(то есть хоть один проект добавлен)
-                if config_manager.get_values(str(update.message.chat_id)):
-                    # если project_id есть в config.json для текущего чата
-                    if str(project_info['id']) in config_manager.get_values(str(update.message.chat_id)):
-                        # выводим информацию о MR проекта
-                        merge_requests = gitlab_service.get_gitlab_merges_info(merge_url)
-                        for mr in merge_requests:
-                            mr_id = mr.get('id')
-                            title = mr.get('title')
-                            description = mr.get('description', 'No description')
-                            state = mr.get('state')
-                            created_at = mr.get('created_at')
-                            # updated_at = mr.get('updated_at')
-                            web_url = mr.get('web_url')
+        if merges:
+            for merge in merges:
+                # доп проверка чтобы отсеить mr которые не относятся к чату
+                # (можно убрать и выводится тогда будут все mr доступные пользователю)
+                if str(merge.get('project_id')) not in config_manager.get_values(str(chat_id)):
+                    continue
 
-                            # печатаем только открытые MR
-                            if state == 'closed':
-                                continue
+                mr_id = merge.get('id')
+                title = merge.get('title')
+                description = merge.get('description', 'No description')
+                state = merge.get('state')
+                created_at = merge.get('created_at')
+                # updated_at = mr.get('updated_at')
+                web_url = merge.get('web_url')
 
-                            response_text += (
-                                f"MR ID: {mr_id}\n"
-                                f"Заголовок: {title}\n"
-                                f"Описание: {description}\n"
-                                f"Создан: {created_at}\n"
-                                f"URL: {web_url}\n\n"
-                            )
-                else:
-                    await update.message.reply_text(f"Проекты в вашем чате не найдены. Добавьте их через /add_project.")
-                    return
+                response_text += (
+                    f"MR ID: {mr_id}\n"
+                    f"Заголовок: {title}\n"
+                    f"Описание: {description}\n"
+                    f"Создан: {created_at}\n"
+                    f"URL: {web_url}\n\n"
+                )
         else:
             response_text = "Не удалось получить информацию о проектах из GitLab. Возможно список проектов пуст."
+
         if response_text == "Список открытых merge requests:\n":
             await update.message.reply_text("Открытых запросов на слияние нет.")
         else:
             await update.message.reply_text(response_text)
         await asyncio.sleep(TIME)
 
+# endregion Функции
+
+# region Команды бота
+
+# функция запуска бота /start
+@user_access_required
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("Привет! Я бот, который отслеживает открытый MR на вашем сервере GitLab. \n/help "
+                                    "- посмотреть список команд")
+
 
 # Функция запуска, бот начинает мониторить MR
 @user_access_required
 async def start_checking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.message.chat_id
-    if not is_authorized(str(chat_id)):
-        await unauthorized_message(update)
-        return
     chat_id = update.message.chat_id
     if chat_id in tasks and not tasks[chat_id].done():
         await update.message.reply_text(f'Мониторинг уже запущен.')
@@ -214,10 +164,6 @@ async def start_checking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # Функция остановки, бот прекращает мониторить MR
 @user_access_required
 async def stop_checking(update: Update, context: CallbackContext) -> None:
-    chat_id = update.message.chat_id
-    if not is_authorized(str(chat_id)):
-        await unauthorized_message(update)
-        return
     chat_id = update.message.chat_id
     if chat_id in tasks and not tasks[chat_id].done():
         tasks[chat_id].cancel()
@@ -252,10 +198,6 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # Функция для добавления проекта в чат
 @user_access_required
 async def add_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.message.chat_id
-    if not is_authorized(str(chat_id)):
-        await unauthorized_message(update)
-        return
     args = context.args
     if len(args) != 1 or not args[0].isdigit():
         await update.message.reply_text("Используйте: /add_project <PROJECT_ID>. PROJECT_ID должен быть целым числом.")
@@ -276,10 +218,6 @@ async def add_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # Функция для удаления проекта из чата
 @user_access_required
 async def delete_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.message.chat_id
-    if not is_authorized(str(chat_id)):
-        await unauthorized_message(update)
-        return
     chat_id = str(update.message.chat_id)
     if len(context.args) == 1:
         project_id = context.args[0]
@@ -296,10 +234,6 @@ async def delete_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # Функция для получения списка проектов чата
 @user_access_required
 async def get_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.message.chat_id
-    if not is_authorized(str(chat_id)):
-        await unauthorized_message(update)
-        return
     chat_id = str(update.message.chat_id)
     project_ids = config_manager.get_values(chat_id)
 
@@ -332,5 +266,3 @@ def run_bot():
 
 if __name__ == '__main__':
     run_bot()
-
-

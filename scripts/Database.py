@@ -1,10 +1,16 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, String, Text
+from sqlalchemy import create_engine, Column, Integer, Text
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import sessionmaker
 
-# строка подключения
-DATABASE_URL = "postgresql+psycopg2://postgres:12345@localhost/user"
+# Получаем части строки подключения из переменных окружения
+db_user = os.getenv('DB_USER', 'postgres')
+db_password = os.getenv('DB_PASSWORD', '12345')
+db_host = os.getenv('DB_HOST', 'localhost')
+db_name = os.getenv('DB_NAME', 'user')
+
+# Формируем строку подключения
+DATABASE_URL = f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}/{db_name}"
 
 # Создание подключения
 engine = create_engine(DATABASE_URL)
